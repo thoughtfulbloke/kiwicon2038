@@ -1,0 +1,262 @@
+---
+title: "The day the carnival came to town"
+author: "David Hood, @thoughtfulnz, github.com/thoughtfulbloke/kiwicon2038"
+date: "12/11/2018"
+output:
+  powerpoint_presentation: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(dpi = 280)
+```
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(purrr)
+library(tidyr)
+library(ggraph)
+library(igraph)
+library(ggthemes)
+library(gganimate)
+library(patchwork)
+library(tidytext)
+library(stringr)
+library(ggrepel)
+```
+
+```{r coredata}
+# coredata has v_for visitor (tweet discussion) and
+# m_for_mentions (notifications from the tweets)
+load("~/Syncplicity Folders/support_files/coredata.RData")
+n_for_nznetwork <- read.csv("~/Syncplicity Folders/support_files/nzmatches.csv",
+                          colClasses = "character") # nz friend relationships
+r_for_radicalism <- read.csv("~/Syncplicity Folders/support_files/fa_spec.csv",
+                          colClasses = "character") # were on spectrum account
+c_for_country <- read.csv("~/Syncplicity Folders/support_files/assignment.csv",
+                          colClasses = "character")
+f_for_friends <- read.csv("~/Syncplicity Folders/support_files/friends.csv",
+                          colClasses = "character") %>%
+    mutate(lookup = paste(paste0("x",user), paste0("x",friends_id)))
+```
+
+## Dataset
+
+- From targetted searches & capturing at time
+- 2018-07-25 13:03:40 to 2018-08-06 23:45:21 UTC
+- 115218 tweets, 3065709 mentions
+- 373693 accounts loosely involved
+- 40798 accounts tightly involved
+- 53900649 friends relationships
+- 21366303 likes
+
+## Backstory
+
+```{r, fig.height=3, dpi=300}
+# 5th July
+data_as_txt <- "
+state, opposed, supportive
+NZ, 25.5, 81.3
+AU, 25.5, 0
+US, 20.7, 12.5
+UK, 10.9, 6.3
+robots, 7.6, 0
+anon, 8.2, 0
+other, 1.6, 0"
+
+read.csv(text=data_as_txt) %>% gather(status, percent, 2:3) %>%
+    ggplot(aes(x=status, y=percent, fill=state)) + 
+    geom_col(width=0.3) + coord_flip() + theme_minimal() +
+    scale_fill_colorblind() + xlab("reaction to Mayor")
+
+```
+
+## Composition
+
+```{r}
+c_for_country %>% 
+    mutate(location = case_when(
+        locat == "offshore" ~ "not nz",
+        locat == "US" ~ "US",
+        locat == "" ~ "unknown",
+        locat == "GB" ~ "UK",
+        locat == "AU" ~ "AU",
+        locat == "NZ" ~ "NZ",
+        locat == "CA" ~ "CA",
+        TRUE ~ "other"
+    )) %>%
+    count(location, sort = TRUE) %>%
+    ggplot(aes(x=location, y=n, fill=location)) + 
+    geom_col(width=0.3) + theme_minimal() +
+    scale_fill_colorblind() + xlab("inferred location")
+```
+
+## Politics - notifiers
+
+```{r, fig.height=5}
+c_for_country <- c_for_country %>% mutate(xid=paste0("x", user_id))
+grf <- v_for_visitor %>%
+    count(user_id) %>%
+    inner_join(r_for_radicalism, by=c("user_id" = "xliker")) %>%
+    inner_join(c_for_country, by=c("user_id" = "xid")) %>% 
+    rename(place = locat) %>%
+    filter(place %in% c("NZ","AU","GB","US")) %>%
+    mutate(
+        balance = as.numeric(nett_fa) - 
+            (as.numeric(nett_nz) + as.numeric(nett_au) + 
+                 as.numeric(nett_gb) + as.numeric(nett_us)),
+        focus = (as.numeric(nett_fa) + as.numeric(nett_nz) + as.numeric(nett_au) + 
+                 as.numeric(nett_gb) + as.numeric(nett_us))/as.numeric(allike)
+    ) %>%
+    count(user_id, place, balance,focus, n) 
+    ggplot(grf, aes(x = balance, y=log2(focus + 0.01), colour=place)) +
+        geom_vline(xintercept = 0, alpha=0.4) + geom_jitter(alpha=0.3) +
+     facet_wrap(~ place, nrow=2, strip.position="bottom") + scale_colour_colorblind() + theme_void() +
+        theme(legend.position="none", strip.text.x = element_text(size = 32))
+        
+    
+
+```
+
+
+## Community
+
+
+```{r}
+
+m_for_mentions %>%
+    mutate(nox=gsub("x", "", mentions)) %>%
+    inner_join(c_for_country, by=c("nox"="user_id")) %>%
+    filter(locat == "NZ") %>%
+    mutate(close = !paste(mentions, user_id) %in% f_for_friends$lookup,
+           NZ_time = with_tz(ymd_hms(created_at), tz="Pacific/Auckland"),
+           step1 = floor_date(NZ_time,unit = "hour")) %>%
+    group_by(mentions, step1) %>% 
+    summarise(og = sum(!close), ogthres = og > 10) %>%
+    group_by(step1) %>% summarise(thres=sum(ogthres)) %>%
+    ggplot(aes(x=step1, y=thres)) + geom_line() + theme_minimal() +
+    ggtitle("Of 1505 NZ accounts, the number of accounts in a given hour \ngettting more than 10 notifications from outside of thier friend groups") +
+    xlab("Date") + ylab("Number of accounts") +
+    geom_vline(xintercept = ISOdatetime(2018,8,2,19,44,00, tz="Pacific/Auckland"), 
+               colour="blue", lwd=1.1) +
+    annotate("text", x = ISOdatetime(2018,8,3,9,44,00, tz="Pacific/Auckland"),
+             y = 30, label="visit", colour="blue")
+```
+
+## Time
+
+```{r}
+v_for_visitor %>% inner_join(c_for_country, by=c("user_id" = "xid")) %>%
+    filter(locat %in% c("AU", "NZ", "US", "GB")) %>%
+    mutate(hour_of_day = hour(created_at)) %>% 
+    count(locat, hour_of_day) %>% 
+    group_by(locat) %>%
+    mutate(prop = n/sum(n)) %>%
+    ggplot(aes(x=hour_of_day, y=prop, fill=locat)) + 
+    facet_wrap(~locat, ncol=2) +
+    scale_colour_colorblind() +
+    geom_col() + theme_void() + coord_polar() +
+    theme(legend.position="none", strip.text.x = element_text(size = 28)) 
+```
+
+## Language (1) Rate difference
+
+```{r}
+nz <- v_for_visitor %>% 
+    left_join(c_for_country, by=c("user_id" = "xid")) %>%
+    filter(locat == "NZ") %>% select(status_id, text, locat)
+us <- v_for_visitor %>% 
+    left_join(c_for_country, by=c("user_id" = "xid")) %>%
+    filter(locat == "US") %>% select(status_id, text, locat)
+bind_rows(nz,us) %>%
+    unnest_tokens(word, text, token = "tweets") %>%
+    count(locat,word) %>%
+    filter(!str_detect(word,fixed("@"))) %>% 
+    filter(!str_detect(word,fixed("#"))) %>%
+    group_by(locat) %>%
+    mutate(prop = n/sum(n)) %>%
+    ungroup() %>%
+    filter(prop > 0.0001) %>%
+    select(-n) %>%
+    spread(locat, prop,fill = 0) %>%
+    filter(NZ != 0, US != 0) %>%
+    mutate(ratio = US/NZ) %>% 
+    arrange(ratio) %>%
+    slice(c(1:13,(n()-12):n())) %>% 
+    mutate(xval = ifelse(ratio < 1, -1 * NZ/US, ratio),
+           yval = ifelse(ratio < 1, NZ, US),
+           c_is = ifelse(ratio < 1, "NZ", "US")) %>%
+    ggplot(aes(x=xval, y=yval, label=word, colour=c_is)) + 
+    geom_text_repel(size=6) +
+    geom_point() + geom_vline(xintercept = 0, alpha=0.3) + theme_void() +
+    ylim(-0.0005, NA) +
+    theme(legend.position="none", strip.text.x = element_text(size = 28)) +
+    scale_colour_colorblind()
+```
+
+## Language (2) Absolute difference
+
+```{r}
+nz <- v_for_visitor %>% 
+    left_join(c_for_country, by=c("user_id" = "xid")) %>%
+    filter(locat == "NZ") %>% select(status_id, text, locat)
+us <- v_for_visitor %>% 
+    left_join(c_for_country, by=c("user_id" = "xid")) %>%
+    filter(locat == "US") %>% select(status_id, text, locat)
+abswords <- bind_rows(nz,us) %>%
+    unnest_tokens(word, text, token = "tweets") %>%
+    anti_join(get_stopwords(), by="word") %>%
+    count(locat,word) %>%
+    filter(!str_detect(word,fixed("@"))) %>% 
+    filter(!str_detect(word,fixed("#"))) %>%
+    group_by(locat) %>%
+    mutate(prop = n/sum(n)) %>%
+    ungroup() %>%
+    filter(prop > 0.0001) %>%
+    select(-n) %>%
+    spread(locat, prop,fill = 0) %>%
+    mutate(ratio = US-NZ) %>% 
+    arrange(ratio) %>%
+    slice(c(1:13,(n()-12):n())) %>% 
+    mutate(xval = ifelse(ratio < 0, -1 * NZ, ratio),
+           yval = ifelse(ratio < 0, NZ, US),
+           c_is = ifelse(ratio < 0, "NZ", "US"))
+abswords$word[18] <- "USFLAG"
+ggplot(abswords, aes(x=xval, y=yval, label=word, colour=c_is)) + 
+    geom_text_repel(size=6) +
+    geom_point() + geom_vline(xintercept = 0, alpha=0.3) + theme_void() +
+    theme(legend.position="none", strip.text.x = element_text(size = 28)) +
+    scale_colour_colorblind()
+```
+
+## Uneven
+
+```{r}
+
+m_for_mentions %>% 
+    mutate(NZ_time = with_tz(ymd_hms(created_at), tz="Pacific/Auckland"),
+           step1 = floor_date(NZ_time,unit = "hour")) %>%
+    filter(step1 >= ISOdatetime(2018,8,1,0,0,0, tz="Pacific/Auckland"),
+           step1 < ISOdatetime(2018,8,4,0,0,0, tz="Pacific/Auckland")) %>%
+    inner_join(c_for_country, by=c("user_id" = "xid")) %>% 
+    rename(uloc = locat) %>%
+    inner_join(c_for_country, by=c("mentions" = "xid")) %>% 
+    filter(locat == "NZ") %>%
+    group_by(mentions) %>%
+    summarise(n_mentions = n(), 
+              percent_NZ = 100 *sum(uloc == "NZ")/n()) %>%
+    ggplot(aes(x=n_mentions, y=percent_NZ)) + 
+    geom_jitter(alpha=0.3) +
+    theme_minimal() + xlab("number of mentions") +
+    ylab("percent of NZ origin")
+
+```
+
+## Possible Responses
+
+- all along the watchtower
+- pick on someone your own size
+- burn it all down
